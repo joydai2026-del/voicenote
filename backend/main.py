@@ -60,13 +60,89 @@ async def lifespan(app: FastAPI):
     logger.info("VoiceNote backend shutting down")
 
 
+class BodySizeLimitMiddleware:
+    """Reject oversized POST bodies BEFORE FastAPI parses the multipart upload.
+
+    FastAPI's UploadFile dependency triggers multipart parsing during dependency
+    resolution, which means any in-route size check runs after the body has been
+    spooled. This middleware caps bytes at the ASGI receive layer, so a hostile
+    chunked-transfer upload cannot OOM the container before route code runs.
+
+    Applied only to upload paths to avoid touching GETs.
+    """
+
+    def __init__(self, app, max_bytes: int, paths: tuple[str, ...] = ("/articles/generate",)):
+        self.app = app
+        self.max_bytes = max_bytes
+        self.paths = paths
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") not in self.paths:
+            return await self.app(scope, receive, send)
+
+        # Pre-check Content-Length when honest.
+        for name, value in scope.get("headers", []):
+            if name == b"content-length":
+                try:
+                    declared = int(value.decode("ascii"))
+                except (ValueError, UnicodeDecodeError):
+                    declared = 0
+                if declared > self.max_bytes:
+                    await self._send_413(send)
+                    return
+                break
+
+        total = 0
+        oversized = False
+
+        async def bounded_receive():
+            nonlocal total, oversized
+            if oversized:
+                return {"type": "http.disconnect"}
+            message = await receive()
+            if message["type"] == "http.request":
+                body = message.get("body", b"")
+                total += len(body)
+                if total > self.max_bytes:
+                    oversized = True
+                    return {"type": "http.disconnect"}
+            return message
+
+        response_started = False
+
+        async def wrapped_send(message):
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        await self.app(scope, bounded_receive, wrapped_send)
+        if oversized and not response_started:
+            await self._send_413(send)
+
+    async def _send_413(self, send):
+        body = b'{"detail":"Request body too large"}'
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 413,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+
+
 app = FastAPI(
     title="VoiceNote API",
-    version="0.1.1",
+    version="0.1.2",
     description="Talk for 5 minutes, get a publish-ready article.",
     lifespan=lifespan,
 )
 
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=_MAX_AUDIO_BYTES)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
