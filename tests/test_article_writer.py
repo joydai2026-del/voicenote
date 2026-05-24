@@ -265,3 +265,103 @@ def test_articles_get_requires_auth():
     client, _ = _client_with_api_key()
     resp = client.get("/articles/some-uuid")
     assert resp.status_code == 401
+
+
+# ── Article-writer schema floor ──────────────────────────────────────────────
+
+
+def _fake_response(payload_text: str):
+    """Build a tiny stand-in for an Anthropic response."""
+
+    class _Block:
+        text = payload_text
+
+    class _Usage:
+        input_tokens = 100
+        output_tokens = 50
+
+    class _Resp:
+        content = [_Block()]
+        usage = _Usage()
+
+    return _Resp()
+
+
+class _FakeClient:
+    def __init__(self, payload: str):
+        self._payload = payload
+        self.messages = self
+
+    def create(self, **_kwargs):
+        return _fake_response(self._payload)
+
+
+def test_article_writer_rejects_empty_title(monkeypatch):
+    """Empty title is a degraded response; must raise (caller turns into 502)."""
+    import json
+
+    from backend import article_writer
+
+    body = "Some content. " * 30  # ~390 chars
+    payload = json.dumps(
+        {"title": "", "body_md": body, "sections": [{"h2": "s", "summary": "s"}]}
+    )
+    monkeypatch.setattr(article_writer, "_CLIENT", _FakeClient(payload))
+
+    with pytest.raises(ValueError, match="empty title"):
+        article_writer.generate_article("transcript long enough")
+
+
+def test_article_writer_rejects_short_body(monkeypatch):
+    """body_md under 200 chars is a degraded response."""
+    import json
+
+    from backend import article_writer
+
+    payload = json.dumps(
+        {
+            "title": "Real title",
+            "body_md": "Too short.",
+            "sections": [{"h2": "s", "summary": "s"}],
+        }
+    )
+    monkeypatch.setattr(article_writer, "_CLIENT", _FakeClient(payload))
+
+    with pytest.raises(ValueError, match="too short"):
+        article_writer.generate_article("transcript long enough")
+
+
+def test_article_writer_rejects_empty_sections(monkeypatch):
+    import json
+
+    from backend import article_writer
+
+    body = "Some content. " * 30
+    payload = json.dumps({"title": "Real title", "body_md": body, "sections": []})
+    monkeypatch.setattr(article_writer, "_CLIENT", _FakeClient(payload))
+
+    with pytest.raises(ValueError, match="empty sections"):
+        article_writer.generate_article("transcript long enough")
+
+
+def test_article_writer_accepts_valid_schema(monkeypatch):
+    """Sanity: a proper response makes it through the floor checks."""
+    import json
+
+    from backend import article_writer
+
+    body = "This is a proper article body with enough content. " * 10  # > 200 chars
+    payload = json.dumps(
+        {
+            "title": "Real title",
+            "body_md": body,
+            "sections": [{"h2": "s1", "summary": "ok"}],
+        }
+    )
+    monkeypatch.setattr(article_writer, "_CLIENT", _FakeClient(payload))
+
+    article = article_writer.generate_article("transcript long enough")
+    assert article["title"] == "Real title"
+    assert len(article["body_md"]) > 200
+    assert article["sections"]
+    assert "cost_usd" in article

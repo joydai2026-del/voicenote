@@ -168,13 +168,26 @@ def generate_article(transcript: str) -> dict:
     if missing:
         raise ValueError(f"Article writer response missing required keys: {sorted(missing)}")
 
-    # Sanity coerce types
+    # Type checks
     if not isinstance(article["title"], str):
-        article["title"] = str(article["title"])
+        raise ValueError(f"title must be a string, got {type(article['title']).__name__}")
     if not isinstance(article["body_md"], str):
-        article["body_md"] = str(article["body_md"])
+        raise ValueError(f"body_md must be a string, got {type(article['body_md']).__name__}")
     if not isinstance(article["sections"], list):
-        article["sections"] = []
+        raise ValueError(f"sections must be a list, got {type(article['sections']).__name__}")
+
+    # Sanity-floor on content: an "article" with no body is a failure, not a
+    # complete result. 200 chars is well below the 600-word target; this catches
+    # empty/degraded model output that would otherwise persist as complete.
+    title = article["title"].strip()
+    body_md = article["body_md"].strip()
+    sections = article["sections"]
+    if not title:
+        raise ValueError("Article writer returned empty title")
+    if len(body_md) < 200:
+        raise ValueError(f"Article writer returned body too short ({len(body_md)} chars)")
+    if not sections:
+        raise ValueError("Article writer returned empty sections list")
 
     # Cost
     usage = getattr(response, "usage", None)

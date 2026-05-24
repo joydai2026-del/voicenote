@@ -131,12 +131,17 @@ export async function POST(req: Request) {
     offset += c.byteLength;
   }
 
+  // Intentionally do NOT forward X-Forwarded-For. The backend's TRUSTED_PROXIES
+  // defaults to empty; if we sent the user IP, the backend would either ignore
+  // it (rate-limiting all proxy traffic under one Modal-edge bucket) or trust
+  // it without verifying the proxy chain. Rate-limiting happens here at the
+  // proxy edge; the backend's per-IP limit is a defense-in-depth secondary
+  // throttle for direct-backend traffic (advanced path with API key).
   const upstream = await fetch(`${BACKEND_URL}/articles/generate`, {
     method: "POST",
     headers: {
       "Content-Type": req.headers.get("content-type") || "application/octet-stream",
       "X-API-Key": API_KEY,
-      "X-Forwarded-For": ip,
     },
     body: buffer,
   });

@@ -53,7 +53,9 @@ def fastapi_app():
     import sys
 
     sys.path.insert(0, "/app")
-    os.environ.setdefault("VOICENOTE_DB_PATH", "/data/voicenote.db")
+    # Hard-set (not setdefault) so a stale value in the secret bundle cannot
+    # silently route writes back to ephemeral /tmp and lose data on cold start.
+    os.environ["VOICENOTE_DB_PATH"] = "/data/voicenote.db"
     from backend.main import app as _app
 
     return _app

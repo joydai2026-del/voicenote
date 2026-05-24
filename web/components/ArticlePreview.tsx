@@ -105,9 +105,15 @@ export default function ArticlePreview({ article, onReset }: ArticlePreviewProps
         </div>
       )}
 
-      {/* Article body */}
+      {/* Article body. The transcript is user-controlled; even though our system
+          prompt instructs Claude to treat it as data, a determined attacker could
+          coax model output that includes images or links pointing at trackers.
+          We disable images entirely and only allow http(s) hyperlinks. */}
       <div className="prose prose-invert prose-sm max-w-none bg-zinc-800/40 rounded-xl p-5 border border-zinc-700/50 mb-4">
         <ReactMarkdown
+          urlTransform={(url) =>
+            /^https?:\/\//i.test(url) ? url : ""
+          }
           components={{
             h1: ({ children }) => (
               <h1 className="text-xl font-bold text-white mt-0 mb-3">{children}</h1>
@@ -121,6 +127,17 @@ export default function ArticlePreview({ article, onReset }: ArticlePreviewProps
             strong: ({ children }) => (
               <strong className="text-white font-semibold">{children}</strong>
             ),
+            a: ({ href, children }) => (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer nofollow"
+                className="text-emerald-400 underline"
+              >
+                {children}
+              </a>
+            ),
+            img: () => null,
           }}
         >
           {article.body_md}

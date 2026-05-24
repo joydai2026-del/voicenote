@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 API_KEY = os.environ.get("VOICENOTE_API_KEY", "").strip()
 
 # 25 MB is the Whisper API limit; we keep that as the backend cap. The Next.js
-# proxy caps tighter (default 4.5 MB) to fit Vercel Hobby; advanced users hitting
+# proxy caps tighter (default 4 MB) to fit Vercel Hobby; advanced users hitting
 # the backend directly with the API key can push up to 25 MB.
 _MAX_AUDIO_BYTES = int(os.environ.get("VOICENOTE_MAX_AUDIO_BYTES", 25 * 1024 * 1024))
 
@@ -135,14 +135,38 @@ async def generate(
     _require_api_key(x_api_key)
     _enforce_rate_limit(_client_ip(request))
 
-    audio_bytes = await audio.read()
+    # Cheap pre-check: reject obviously oversized uploads via Content-Length
+    # BEFORE we buffer anything. UploadFile would otherwise let us hold the
+    # entire payload in memory before any size check.
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            declared = int(content_length)
+        except ValueError:
+            declared = 0
+        if declared > _MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio file too large. Max {_MAX_AUDIO_BYTES // 1024 // 1024} MB.",
+            )
+
+    # Stream-read the multipart audio with a hard byte cap so a lying or absent
+    # Content-Length cannot make us buffer unbounded data.
+    audio_bytes = bytearray()
+    chunk_size = 64 * 1024
+    while True:
+        chunk = await audio.read(chunk_size)
+        if not chunk:
+            break
+        audio_bytes.extend(chunk)
+        if len(audio_bytes) > _MAX_AUDIO_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Audio file too large. Max {_MAX_AUDIO_BYTES // 1024 // 1024} MB.",
+            )
+    audio_bytes = bytes(audio_bytes)
     if not audio_bytes:
         raise HTTPException(status_code=400, detail="Audio file is empty.")
-    if len(audio_bytes) > _MAX_AUDIO_BYTES:
-        raise HTTPException(
-            status_code=413,
-            detail=f"Audio file too large. Max {_MAX_AUDIO_BYTES // 1024 // 1024} MB.",
-        )
 
     filename = audio.filename or "recording.webm"
     logger.info(

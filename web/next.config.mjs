@@ -1,7 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // No special config needed for MVP.
-  // NEXT_PUBLIC_BACKEND_URL is injected via Vercel env vars.
+  // VOICENOTE_BACKEND_URL + VOICENOTE_API_KEY are server-only env vars
+  // (no NEXT_PUBLIC_ prefix). They are read by web/app/api/articles/generate
+  // at request time and never reach the browser bundle.
 };
 
 export default nextConfig;
