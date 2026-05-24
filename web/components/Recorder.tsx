@@ -63,7 +63,7 @@ export default function Recorder({
       };
       tick();
     } catch {
-      // AudioContext not available (e.g. SSR) — silent fail
+      // AudioContext not available (e.g. SSR), silent fail
     }
   }, []);
 

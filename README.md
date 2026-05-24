@@ -4,91 +4,45 @@
 
 Founders, creators, and podcasters have ideas in their heads but find writing slow. VoiceNote removes the blank page: speak your thoughts, get a structured article ready to publish.
 
----
-
-## Live URLs
-
-> Update after deploy
-
-- **Frontend**: `https://voicenote.vercel.app` (pending Vercel deploy)
-- **Backend**: `https://jj--voicenote-backend-fastapi-app.modal.run` (pending Modal deploy)
-- **Health check**: `GET /healthz` → `{"status":"ok","version":"0.1.0"}`
+> **Status**: V0.1 ships record-and-generate via Whisper + Claude Sonnet 4.6. The Substack "publish" button is a compose-page URL prefill, not a real API write.
 
 ---
 
-## Demo Path
+## Quickstart (local)
 
-1. Open the web URL
-2. Click the red microphone button (browser requests mic permission)
-3. Talk for 2-5 minutes about any topic
-4. Click "Stop & Generate Article" (enabled after 10 seconds)
-5. See rendered article with title + full body
-6. Click "Copy Markdown", "Download .md", or "Publish to Substack"
+1. Backend:
+   ```bash
+   cd voicenote
+   pip install -e .
+   export ANTHROPIC_API_KEY="sk-ant-..."
+   export OPENAI_API_KEY="sk-..."
+   export VOICENOTE_API_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
+   echo "VOICENOTE_API_KEY=$VOICENOTE_API_KEY"
+   uvicorn backend.main:app --reload --port 8000
+   ```
+
+2. Frontend:
+   ```bash
+   cd web
+   echo "VOICENOTE_BACKEND_URL=http://localhost:8000" > .env.local
+   echo "VOICENOTE_API_KEY=$VOICENOTE_API_KEY" >> .env.local
+   npm install && npm run dev
+   ```
+   Both env vars are **server-only** (no `NEXT_PUBLIC_` prefix). The browser uploads audio to Next.js at `/api/articles/generate`; the route holds the key and proxies to the backend. Nothing secret ships in the JS bundle.
+
+3. Open `http://localhost:3000`. Click record, talk, click stop.
 
 ---
 
-## How It Compares
-
-| Feature | Otter/Whisper | Riverside/Descript | VoiceNote |
-|---|---|---|---|
-| Live transcript | Yes | Yes | No (batch) |
-| Structured article | No | No | Yes |
-| 1-click publish | No | No | Yes (Substack) |
-| Price | $17/mo | $24/mo | ~$0.04/article |
-
----
-
-## Quickstart (Local Dev)
-
-### Backend
+## Tests
 
 ```bash
-cd voicenote/
-
-# Install Python deps
-pip install -e .
-
-# Copy and fill env vars
-cp .env.example .env
-# Edit .env: set ANTHROPIC_API_KEY + OPENAI_API_KEY
-
-# Run locally
-uvicorn backend.main:app --reload --port 8000
-
-# Health check
-curl http://localhost:8000/healthz
-# {"status":"ok","version":"0.1.0"}
-
-# Test with fixture audio
-curl -X POST http://localhost:8000/articles/generate \
-  -F "audio=@tests/fixtures/sample.wav"
+pip install -e .[dev]
+pytest tests/ -v                              # offline tests run without keys
+ANTHROPIC_API_KEY=sk-ant-... pytest tests/    # plus the 2 live-Claude tests
 ```
 
-### Frontend
-
-```bash
-cd web/
-npm install
-
-# Create env
-echo "NEXT_PUBLIC_BACKEND_URL=http://localhost:8000" > .env.local
-
-npm run dev
-# Open http://localhost:3000
-```
-
-### Tests
-
-```bash
-# Unit + live Claude tests (requires ANTHROPIC_API_KEY)
-pytest tests/ -v
-
-# Lint
-ruff check backend/
-
-# Frontend type check + build
-cd web && npm run build
-```
+10 offline tests cover article-writer schema, prompt-injection escape, length cap, /articles/generate auth + size cap, and parser hardening. 2 live_api tests require ANTHROPIC_API_KEY.
 
 ---
 
@@ -97,93 +51,115 @@ cd web && npm run build
 ### Backend (Modal)
 
 ```bash
-pip install modal
-modal token new  # first-time auth
+modal token new   # one-time auth
 
-# Create secret group in https://modal.com/secrets named "voicenote-secrets"
-# Add: ANTHROPIC_API_KEY, OPENAI_API_KEY
-# Optional: SUPABASE_URL, SUPABASE_ANON_KEY, VOICENOTE_ALLOWED_ORIGINS
+# One-time: create the secret bundle Modal reads at runtime
+modal secret create voicenote-secrets \
+    OPENAI_API_KEY=$OPENAI_API_KEY \
+    ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
+    VOICENOTE_API_KEY=$VOICENOTE_API_KEY \
+    VOICENOTE_ALLOWED_ORIGINS=https://<your-frontend>.vercel.app
+
+# Optional Supabase persistence (else SQLite on /data Volume):
+#     SUPABASE_URL=...
+#     SUPABASE_ANON_KEY=...
 
 modal deploy backend/modal_app.py
-# Prints URL like: https://jj--voicenote-backend-fastapi-app.modal.run
 ```
+
+The `voicenote-data` Modal Volume keeps the SQLite fallback durable across container scale-to-zero.
 
 ### Frontend (Vercel)
 
 ```bash
-cd web/
-npx vercel --prod
-# Set env var NEXT_PUBLIC_BACKEND_URL to the Modal URL above
+cd web
+vercel env add VOICENOTE_BACKEND_URL production   # e.g. https://<...>.modal.run
+vercel env add VOICENOTE_API_KEY production       # same value as backend's VOICENOTE_API_KEY
+vercel --prod
 ```
+
+Both env vars are server-only. The Next.js route at `web/app/api/articles/generate/route.ts` is the only thing that talks to the backend.
+
+---
+
+## Security posture (V0.1)
+
+- All `POST /articles/generate` and `GET /articles/:id` calls require an `X-API-Key` header. Missing config = 503; bad key = 401.
+- Per-IP rate limit (default 5/hour on backend, 5/hour on Next.js proxy too), LRU-capped at 5000 buckets to prevent memory DoS.
+- `X-Forwarded-For` is ignored unless source IP is in `TRUSTED_PROXIES`; the Next.js proxy reads only platform-trusted `x-vercel-forwarded-for` / `x-real-ip`.
+- Audio capped at 25 MB on the backend (Whisper API limit); the Next.js proxy caps tighter at 4 MB to fit Vercel Hobby's serverless body limit. Longer recordings need Vercel Pro or direct backend access with API key.
+- CORS locked to `VOICENOTE_ALLOWED_ORIGINS` (default `http://localhost:3000`).
+- Transcript wrapped in `<transcript>` XML tags with case- and whitespace-insensitive close-tag escape and anti-injection guardrail in the system prompt. Truncated at 60k chars before being sent to Claude.
+- Anthropic + OpenAI clients are module-level lazy singletons.
+
+---
+
+## How it compares
+
+| Feature              | Otter/Whisper | Riverside/Descript | VoiceNote        |
+|----------------------|---------------|--------------------|------------------|
+| Live transcript      | Yes           | Yes                | No (batch)       |
+| Structured article   | No            | No                 | Yes              |
+| 1-click publish      | No            | No                 | Yes (Substack)   |
+| Price                | $17/mo        | $24/mo             | ~$0.04/article   |
 
 ---
 
 ## Architecture
 
 ```
-Browser                      Modal (FastAPI)              APIs
-  |                               |                         |
-  |-- MediaRecorder (.webm) ----> |                         |
-  |                               |-- audio bytes --------> Whisper
-  |                               |<-- transcript ----------|
-  |                               |-- transcript ---------> Claude claude-sonnet-4-6
-  |                               |<-- {title,body_md} -----|
-  |                               |-- save to SQLite/Supabase
-  |<-- {id,title,body_md,cost} ---|
-  |                               |
-  |-- Markdown preview            |
-  |-- Copy/Download/.md           |
-  |-- Publish to Substack         |
+Browser                 Next.js /api/articles/generate   Modal (FastAPI)     APIs
+  |                                |                            |              |
+  |-- MediaRecorder (.webm) -----> | server route adds X-API-Key|              |
+  |                                |---- upload ---------------->              |
+  |                                |                            |-- bytes -----> Whisper
+  |                                |                            |<-- transcript -|
+  |                                |                            |-- prompt ------> Claude Sonnet 4.6
+  |                                |                            |<-- {title,body_md}|
+  |                                |                            |-- save -> SQLite or Supabase
+  |                                |<--- {id,title,body_md} ----|
+  |<-- {id,title,body_md} ---------|
 ```
 
-### Key files
+### Files
 
 ```
 backend/
-  main.py           FastAPI app: /healthz, POST /articles/generate, GET /articles/{id}
-  transcribe.py     Whisper API wrapper + CJK language heuristic
-  article_writer.py Claude prompt + JSON parser + cost calculator
-  storage.py        Supabase upsert with SQLite fallback
-  modal_app.py      Modal ASGI wrapper + smoke test function
-
+  main.py            FastAPI app: auth + rate limit + size cap, /healthz, /articles/generate, /articles/:id
+  transcribe.py      Whisper API wrapper, lazy client, CJK language heuristic
+  article_writer.py  Claude prompt (XML-wrapped transcript + anti-injection), schema validation
+  storage.py         Supabase upsert with SQLite fallback
+  modal_app.py       Modal ASGI wrapper, /data Volume for SQLite persistence, @modal.concurrent
 web/
-  app/page.tsx              Landing page + recorder UI (single page)
-  components/Recorder.tsx   MediaRecorder state machine + waveform UI
-  components/ArticlePreview.tsx  Rendered markdown + Copy/Download/Substack
-  lib/api.ts                Fetch wrapper pointing at backend URL
-
+  app/
+    page.tsx                          Landing + recorder UI
+    api/articles/generate/route.ts    Server-side proxy holding API key
+  components/
+    Recorder.tsx                       MediaRecorder state machine
+    ArticlePreview.tsx                 Rendered markdown
+  lib/api.ts                           Same-origin fetch wrapper
 tests/
-  test_article_writer.py    Live Claude test + unit tests
-  fixtures/sample.wav       5s sine-wave WAV for curl testing
+  test_article_writer.py               Offline + live_api tests
 ```
 
 ---
 
-## Cost Per Article
+## Cost per article
 
-| Step | Model | Est. cost |
-|---|---|---|
-| Whisper transcription | whisper-1 | $0.006/min x 3min = $0.018 |
-| Claude article writer | claude-sonnet-4-6 | ~$0.018 (1K in + 1K out tokens) |
-| Total | | ~$0.036/article |
-
----
-
-## Known Issues / Not Done
-
-1. **No user auth**: `user_id` is not required. All articles stored as "anonymous". Add Clerk or Supabase Auth for multi-user.
-2. **Supabase integration untested**: SUPABASE_URL/ANON_KEY not in shell env during build. SQLite fallback is active. Supabase path is written and should work with env vars set.
-3. **No real-time waveform**: Waveform bars are simulated from AudioContext analyser. A true spectrogram requires Web Audio API canvas rendering (nice-to-have).
-4. **Substack publish**: URL-stuffing only (Substack has no public write API). Opens compose page with title pre-filled. User pastes body manually.
-5. **Modal cold start**: First request after inactivity may take 5-10s. Set `min_concurrency=1` in modal_app.py to keep warm (increases cost).
-6. **5-min hard cap**: Auto-stops recording at 300s. Whisper's 25MB file limit is the practical ceiling (~4 hours at webm quality).
-7. **LiveKit not used**: MediaRecorder fallback shipped as primary (see HOW-DECISION.md §1).
+| Step                  | Model              | Cost                       |
+|-----------------------|--------------------|----------------------------|
+| Whisper transcription | whisper-1          | $0.006/min x 3min = $0.018 |
+| Claude article writer | claude-sonnet-4-6  | ~$0.018 (1K in + 1K out)   |
+| **Total**             |                    | **~$0.036/article**        |
 
 ---
 
-## Comparison with Existing Solutions Researched
+## Known limitations (V0.1)
 
-- **Otter.ai / Whisper**: transcription only, no article structure, no 1-click publish
-- **Riverside.fm / Descript**: podcast-focused, video editing, no article generation from voice
-- **Podium**: AI podcast show notes, closest competitor, subscription-based
-- **VoiceNote angle**: structured long-form article (600-1200 words), per-use cost model, open infra
+- No user auth model. `user_id` is an optional query param; all storage rows are effectively single-tenant under the backend API key.
+- Substack publish is a compose-page URL prefill (no public write API exists).
+- Modal cold start adds 5-10s to the first request after inactivity. Set `min_containers=1` to keep one warm (raises cost).
+- Audio cap is 25 MB on the backend (Whisper limit); Next.js proxy is tighter at 4 MB for Vercel Hobby.
+- Rate limit is per-container in-memory. Multi-container scale needs Redis or Cloudflare.
+
+See `HOW-DECISION.md` for implementation decisions.

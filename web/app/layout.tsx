@@ -5,7 +5,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "VoiceNote — Talk, get a publish-ready article",
+  title: "VoiceNote, Talk, get a publish-ready article",
   description:
     "Speak for 2-5 minutes, get a polished, publish-ready article powered by Whisper and Claude. No writing required.",
   openGraph: {

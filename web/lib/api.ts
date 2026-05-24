@@ -1,13 +1,11 @@
 /**
- * VoiceNote API client.
+ * VoiceNote frontend API client.
  *
- * Points at NEXT_PUBLIC_BACKEND_URL (set in Vercel env or .env.local).
- * Falls back to localhost:8000 for local development.
+ * The browser only ever talks to its own origin at /api/articles/generate.
+ * That route is a Next.js server function (web/app/api/articles/generate/route.ts)
+ * which holds the backend URL + API key via server-only env vars. Nothing
+ * secret ships in the browser bundle.
  */
-
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL?.replace(/\/$/, "") ||
-  "http://localhost:8000";
 
 export interface ArticleSection {
   h2: string;
@@ -33,7 +31,7 @@ export async function generateArticle(
   });
   formData.append("audio", file);
 
-  const response = await fetch(`${BACKEND_URL}/articles/generate`, {
+  const response = await fetch("/api/articles/generate", {
     method: "POST",
     body: formData,
   });
@@ -51,16 +49,4 @@ export async function generateArticle(
   }
 
   return response.json() as Promise<ArticleResponse>;
-}
-
-export async function checkHealth(): Promise<boolean> {
-  try {
-    const response = await fetch(`${BACKEND_URL}/healthz`, {
-      method: "GET",
-      signal: AbortSignal.timeout(5000),
-    });
-    return response.ok;
-  } catch {
-    return false;
-  }
 }

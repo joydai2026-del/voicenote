@@ -40,7 +40,7 @@ export default function Home() {
         <div className="text-xs text-zinc-500">Talk. Get a publish-ready article.</div>
       </nav>
 
-      {/* Hero — shown only before recording completes */}
+      {/* Hero, shown only before recording completes */}
       {!article && (
         <section className="text-center px-6 pt-16 pb-10">
           <div className="inline-flex items-center gap-2 bg-zinc-800/80 border border-zinc-700/60 rounded-full px-4 py-1.5 text-xs text-zinc-400 mb-6">
@@ -52,7 +52,7 @@ export default function Home() {
             <span className="text-rose-400">get a polished article.</span>
           </h1>
           <p className="text-zinc-400 max-w-md mx-auto text-lg leading-relaxed mb-10">
-            Founders, creators, and podcasters — stop fighting the blank page.
+            Founders, creators, and podcasters, stop fighting the blank page.
             Your ideas are already there. Just say them.
           </p>
 
