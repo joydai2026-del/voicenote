@@ -63,12 +63,16 @@ async def lifespan(app: FastAPI):
 class BodySizeLimitMiddleware:
     """Reject oversized POST bodies BEFORE FastAPI parses the multipart upload.
 
-    FastAPI's UploadFile dependency triggers multipart parsing during dependency
-    resolution, which means any in-route size check runs after the body has been
-    spooled. This middleware caps bytes at the ASGI receive layer, so a hostile
-    chunked-transfer upload cannot OOM the container before route code runs.
+    Strategy: drain the body in middleware (chunk-by-chunk, bounded by max_bytes),
+    then replay it to the downstream app via a new receive callable. If the cap
+    is exceeded mid-read we short-circuit with 413 and the app never sees the
+    body at all. This is the only way to beat Starlette's multipart parser to
+    the response: raising an exception from inside receive() gets caught by the
+    parser and turned into a generic 400, hiding the real reason.
 
-    Applied only to upload paths to avoid touching GETs.
+    Memory cost: 2x peak body size during the replay window (middleware buffer +
+    eventual UploadFile spool). The cap is small enough (25 MB) that this is
+    well within the Modal container's 1 GB allocation.
     """
 
     def __init__(self, app, max_bytes: int, paths: tuple[str, ...] = ("/articles/generate",)):
@@ -80,7 +84,7 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http" or scope.get("method") != "POST" or scope.get("path") not in self.paths:
             return await self.app(scope, receive, send)
 
-        # Pre-check Content-Length when honest.
+        # Cheap fast-path: reject on honest Content-Length before reading any body.
         for name, value in scope.get("headers", []):
             if name == b"content-length":
                 try:
@@ -92,33 +96,41 @@ class BodySizeLimitMiddleware:
                     return
                 break
 
+        # Drain the body with a hard byte cap.
         total = 0
-        oversized = False
-
-        async def bounded_receive():
-            nonlocal total, oversized
-            if oversized:
-                return {"type": "http.disconnect"}
+        chunks: list[bytes] = []
+        more_body = True
+        while more_body:
             message = await receive()
-            if message["type"] == "http.request":
-                body = message.get("body", b"")
-                total += len(body)
-                if total > self.max_bytes:
-                    oversized = True
+            mtype = message["type"]
+            if mtype == "http.disconnect":
+                return
+            if mtype != "http.request":
+                continue
+            body = message.get("body", b"")
+            total += len(body)
+            if total > self.max_bytes:
+                await self._send_413(send)
+                return
+            chunks.append(body)
+            more_body = message.get("more_body", False)
+
+        # Replay the drained body to the downstream app.
+        replay_iter = iter(chunks)
+        replay_done = False
+
+        async def replay_receive():
+            nonlocal replay_done
+            try:
+                chunk = next(replay_iter)
+            except StopIteration:
+                if replay_done:
                     return {"type": "http.disconnect"}
-            return message
+                replay_done = True
+                return {"type": "http.request", "body": b"", "more_body": False}
+            return {"type": "http.request", "body": chunk, "more_body": True}
 
-        response_started = False
-
-        async def wrapped_send(message):
-            nonlocal response_started
-            if message["type"] == "http.response.start":
-                response_started = True
-            await send(message)
-
-        await self.app(scope, bounded_receive, wrapped_send)
-        if oversized and not response_started:
-            await self._send_413(send)
+        await self.app(scope, replay_receive, send)
 
     async def _send_413(self, send):
         body = b'{"detail":"Request body too large"}'

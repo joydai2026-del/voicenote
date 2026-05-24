@@ -267,6 +267,78 @@ def test_articles_get_requires_auth():
     assert resp.status_code == 401
 
 
+def test_chunked_oversized_no_content_length_returns_413():
+    """Raw ASGI: chunked upload with no Content-Length still 413, not 400 from
+    a multipart parse failure. Closes Codex round-3 finding."""
+    import asyncio
+    import importlib
+    import os
+
+    os.environ["VOICENOTE_MAX_AUDIO_BYTES"] = str(1024)
+    os.environ["VOICENOTE_API_KEY"] = "test-voicenote-key"
+    import backend.main as main_module
+
+    importlib.reload(main_module)
+
+    async def run():
+        boundary = "----WebKitFormBoundaryXYZ"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="audio"; filename="big.webm"\r\n'
+            "Content-Type: audio/webm\r\n\r\n"
+            + ("x" * 3_000)
+            + f"\r\n--{boundary}--\r\n"
+        ).encode()
+        # 256-byte chunks; total > 1024 byte cap, no Content-Length header.
+        chunks = [body[i : i + 256] for i in range(0, len(body), 256)]
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/articles/generate",
+            "scheme": "http",
+            "headers": [
+                (b"x-api-key", b"test-voicenote-key"),
+                (b"content-type", f"multipart/form-data; boundary={boundary}".encode()),
+            ],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "http_version": "1.1",
+            "query_string": b"",
+            "raw_path": b"/articles/generate",
+            "root_path": "",
+        }
+
+        chunk_iter = iter(chunks)
+        more_body = True
+
+        async def receive():
+            nonlocal more_body
+            try:
+                ch = next(chunk_iter)
+                return {"type": "http.request", "body": ch, "more_body": True}
+            except StopIteration:
+                if more_body:
+                    more_body = False
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                return {"type": "http.disconnect"}
+
+        messages: list[dict] = []
+
+        async def send(message):
+            messages.append(message)
+
+        await main_module.app(scope, receive, send)
+
+        starts = [m for m in messages if m["type"] == "http.response.start"]
+        assert starts, "no response sent"
+        assert starts[0]["status"] == 413, (
+            f"chunked oversize body should 413; got {starts[0]['status']}"
+        )
+
+    asyncio.run(run())
+    del os.environ["VOICENOTE_MAX_AUDIO_BYTES"]
+
+
 # ── Article-writer schema floor ──────────────────────────────────────────────
 
 
