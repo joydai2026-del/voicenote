@@ -4,7 +4,53 @@
 
 Founders, creators, and podcasters have ideas in their heads but find writing slow. VoiceNote removes the blank page: speak your thoughts, get a structured article ready to publish.
 
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Next.js](https://img.shields.io/badge/Next.js-14-000000?logo=next.js&logoColor=white)
+![Whisper](https://img.shields.io/badge/OpenAI-Whisper-412991?logo=openai&logoColor=white)
+![Claude](https://img.shields.io/badge/Anthropic-Claude%20Sonnet-D97757?logo=anthropic&logoColor=white)
+![Modal](https://img.shields.io/badge/Modal-serverless-6B4FBB?logo=modal&logoColor=white)
+
 > **Status**: V0.1 ships record-and-generate via Whisper + Claude Sonnet 4.6. The Substack "publish" button is a compose-page URL prefill, not a real API write.
+
+---
+
+## Demo
+
+Record yourself for 60 seconds. The output article is in the `examples/` folder.
+
+---
+
+## How it works
+
+```mermaid
+sequenceDiagram
+    participant B as Browser
+    participant N as Next.js
+    participant M as Modal (FastAPI)
+    participant W as Whisper API
+    participant C as Claude Sonnet
+
+    B->>N: POST /api/articles/generate (audio .webm)
+    N->>M: forward + inject API key
+    M->>W: transcribe audio
+    W-->>M: transcript text
+    M->>C: write article (XML-wrapped prompt)
+    C-->>M: {title, body_md}
+    M-->>N: {id, title, body_md}
+    N-->>B: article ready
+```
+
+---
+
+## Cost per article
+
+> **~$0.036 per article** — cheaper than a cup of coffee, cheaper than any SaaS subscription.
+
+| Step                  | Model              | Cost                       |
+|-----------------------|--------------------|----------------------------|
+| Whisper transcription | whisper-1          | $0.006/min x 3min = $0.018 |
+| Claude article writer | claude-sonnet-4-6  | ~$0.018 (1K in + 1K out)   |
+| **Total**             |                    | **~$0.036/article**        |
 
 ---
 
@@ -107,20 +153,6 @@ Both env vars are server-only. The Next.js route at `web/app/api/articles/genera
 
 ## Architecture
 
-```
-Browser                 Next.js /api/articles/generate   Modal (FastAPI)     APIs
-  |                                |                            |              |
-  |-- MediaRecorder (.webm) -----> | server route adds X-API-Key|              |
-  |                                |---- upload ---------------->              |
-  |                                |                            |-- bytes -----> Whisper
-  |                                |                            |<-- transcript -|
-  |                                |                            |-- prompt ------> Claude Sonnet 4.6
-  |                                |                            |<-- {title,body_md}|
-  |                                |                            |-- save -> SQLite or Supabase
-  |                                |<--- {id,title,body_md} ----|
-  |<-- {id,title,body_md} ---------|
-```
-
 ### Files
 
 ```
@@ -141,16 +173,6 @@ web/
 tests/
   test_article_writer.py               Offline + live_api tests
 ```
-
----
-
-## Cost per article
-
-| Step                  | Model              | Cost                       |
-|-----------------------|--------------------|----------------------------|
-| Whisper transcription | whisper-1          | $0.006/min x 3min = $0.018 |
-| Claude article writer | claude-sonnet-4-6  | ~$0.018 (1K in + 1K out)   |
-| **Total**             |                    | **~$0.036/article**        |
 
 ---
 
